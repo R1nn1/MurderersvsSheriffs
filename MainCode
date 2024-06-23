@@ -6,13 +6,16 @@ local aimlockEnabled = false
 local autoFarmMurderersEnabled = false
 local autoFarmSheriffsEnabled = false
 local espEnabled = false
+local boxesESPEnabled = false
 local teleportToSafeSpotEnabled = false
 local targetPlayer = nil
 local espConnections = {}
 local originalPosition = nil
+local aimbotFOV = 450
+local wallCheckEnabled = true
 
-local SheriffTeam = "Sheriffs"    -- The name of the Sheriffs team
-local MurderersTeam = "Murderers"  -- The name of the Murderers team
+local SheriffTeam = "Sheriffs"
+local MurderersTeam = "Murderers"
 
 local function isEnemy(player, target)
     if player.Team and target.Team then
@@ -33,25 +36,15 @@ local function isAlive(player)
     return false
 end
 
-local function findNearestFacingEnemy(player)
-    local Players = game:GetService("Players")
-    local nearestDistance = math.huge
-    local nearestPlayer = nil
-    local camera = game.Workspace.CurrentCamera
-
-    for _, target in ipairs(Players:GetPlayers()) do
-        if target ~= player and isEnemy(player, target) and isAlive(target) then
-            local distance = (player.Character.HumanoidRootPart.Position - target.Character.HumanoidRootPart.Position).Magnitude
-            local direction = (target.Character.HumanoidRootPart.Position - camera.CFrame.Position).Unit
-            local angle = math.acos(camera.CFrame.LookVector:Dot(direction))
-            if distance < nearestDistance and angle < math.rad(30) then  -- 30 degree cone in front of the player
-                nearestDistance = distance
-                nearestPlayer = target
-            end
-        end
+local function isVisible(targetPlayer)
+    if not wallCheckEnabled then
+        return true
     end
-
-    return nearestPlayer
+    local player = game:GetService("Players").LocalPlayer
+    local camera = game.Workspace.CurrentCamera
+    local ray = Ray.new(camera.CFrame.Position, (targetPlayer.Character.HumanoidRootPart.Position - camera.CFrame.Position).unit * 500)
+    local hit, position = game.Workspace:FindPartOnRay(ray, player.Character)
+    return hit and hit:IsDescendantOf(targetPlayer.Character)
 end
 
 local function findNearestEnemy(player)
@@ -68,7 +61,36 @@ local function findNearestEnemy(player)
             end
         end
     end
+    return nearestPlayer
+end
 
+local function teleportBehindTarget(player, target)
+    local playerRootPart = player.Character:FindFirstChild("HumanoidRootPart")
+    local targetRootPart = target.Character:FindFirstChild("HumanoidRootPart")
+    if playerRootPart and targetRootPart then
+        playerRootPart.CFrame = targetRootPart.CFrame * CFrame.new(0, 0, 2)
+    end
+end
+
+local function findTargetInFOV(player)
+    local Players = game:GetService("Players")
+    local camera = game.Workspace.CurrentCamera
+    local nearestDistance = math.huge
+    local nearestPlayer = nil
+
+    for _, target in ipairs(Players:GetPlayers()) do
+        if target ~= player and isEnemy(player, target) and isAlive(target) and isVisible(target) then
+            local screenPos, onScreen = camera:WorldToScreenPoint(target.Character.HumanoidRootPart.Position)
+            if onScreen then
+                local mousePos = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+                local distance = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+                if distance < nearestDistance and distance <= aimbotFOV then
+                    nearestDistance = distance
+                    nearestPlayer = target
+                end
+            end
+        end
+    end
     return nearestPlayer
 end
 
@@ -80,21 +102,37 @@ local function aimAtTarget(player, targetPlayer)
     end
 end
 
-local function teleportBehindTarget(player, targetPlayer)
-    local targetPosition = targetPlayer.Character.HumanoidRootPart.Position
-    local behindPosition = targetPosition - (targetPlayer.Character.HumanoidRootPart.CFrame.LookVector * 3) -- 3 studs behind the target
-    behindPosition = behindPosition + Vector3.new(0, 2, 0) -- Adjust height to avoid clipping into the ground
-    player.Character.HumanoidRootPart.CFrame = CFrame.new(behindPosition)
+local function drawAimbotCircle()
+    local player = game:GetService("Players").LocalPlayer
+    local camera = game.Workspace.CurrentCamera
+    local mousePos = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+
+    local circle = Drawing.new("Circle")
+    circle.Color = Color3.fromRGB(255, 0, 0)
+    circle.Thickness = 2
+    circle.NumSides = 100
+    circle.Radius = aimbotFOV
+    circle.Visible = true
+    circle.Position = mousePos
+    circle.Transparency = 0.5
+
+    local function update()
+        circle.Position = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+        circle.Radius = aimbotFOV
+        circle.Visible = aimlockEnabled
+    end
+
+    game:GetService("RunService").RenderStepped:Connect(update)
 end
 
-local function startAimlock()
+local function startAimbot()
     local Players = game:GetService("Players")
     local player = Players.LocalPlayer
+    drawAimbotCircle()
 
-    -- Main aimlock loop
     while aimlockEnabled do
         if player.Character and isAlive(player) then
-            local newTargetPlayer = findNearestFacingEnemy(player)
+            local newTargetPlayer = findTargetInFOV(player)
             if newTargetPlayer and newTargetPlayer ~= targetPlayer then
                 targetPlayer = newTargetPlayer
             end
@@ -103,7 +141,7 @@ local function startAimlock()
                 aimAtTarget(player, targetPlayer)
             end
         end
-        wait(0.01)  -- Minimal delay for more precision
+        wait(0.001)
     end
 end
 
@@ -111,7 +149,6 @@ local function startAutoFarmMurderers()
     local Players = game:GetService("Players")
     local player = Players.LocalPlayer
 
-    -- Main auto farm loop
     while autoFarmMurderersEnabled do
         if player.Character and isAlive(player) then
             if not targetPlayer or not isAlive(targetPlayer) then
@@ -128,7 +165,7 @@ local function startAutoFarmMurderers()
                 game:GetService("Players").LocalPlayer.Character.Knife.Damage:FireServer(unpack(args))
             end
         end
-        wait(0.1)  -- Adjust delay as needed
+        wait(0.1)
     end
 end
 
@@ -136,7 +173,6 @@ local function startAutoFarmSheriffs()
     local Players = game:GetService("Players")
     local player = Players.LocalPlayer
 
-    -- Main auto farm loop
     while autoFarmSheriffsEnabled do
         if player.Character and isAlive(player) then
             if not targetPlayer or not isAlive(targetPlayer) then
@@ -154,7 +190,7 @@ local function startAutoFarmSheriffs()
                 game:GetService("Players").LocalPlayer.Character.Gun.Damage:FireServer(unpack(args))
             end
         end
-        wait(0.1)  -- Adjust delay as needed
+        wait(0.1)
     end
 end
 
@@ -202,43 +238,36 @@ local function stopESP()
     espConnections = {}
 end
 
-local function teleportToSafeSpot(toggleState)
-    local player = game:GetService("Players").LocalPlayer
-    if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-        if toggleState then
-            originalPosition = player.Character.HumanoidRootPart.CFrame
-            player.Character.HumanoidRootPart.CFrame = CFrame.new(4995.77490234375, -36.5000114440918, -18.143943786621094)
-        else
-            if originalPosition then
-                player.Character.HumanoidRootPart.CFrame = originalPosition
-                originalPosition = nil
-            end
-        end
+local function toggleBoxesESP(state)
+    if state then
+        -- Add your code to enable boxes ESP here
+    else
+        -- Add your code to disable boxes ESP here
     end
+    boxesESPEnabled = state
+end
+
+local function teleportToSafeSpot()
+    local player = game:GetService("Players").LocalPlayer
+    local safeSpot = Vector3.new(0, 10, 0)
+    player.Character:MoveTo(safeSpot)
 end
 
 local function rejoinServer()
     local TeleportService = game:GetService("TeleportService")
-    local Players = game:GetService("Players")
-    local player = Players.LocalPlayer
-
-    TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, player)
+    local player = game:GetService("Players").LocalPlayer
+    TeleportService:Teleport(game.PlaceId, player)
 end
 
 local function serverHop()
     local HttpService = game:GetService("HttpService")
     local TeleportService = game:GetService("TeleportService")
-    local Players = game:GetService("Players")
-    local player = Players.LocalPlayer
+    local player = game:GetService("Players").LocalPlayer
 
     local servers = HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100")).data
+    local randomServer = servers[math.random(1, #servers)]
 
-    for _, server in ipairs(servers) do
-        if server.playing < server.maxPlayers and server.id ~= game.JobId then
-            TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id, player)
-            break
-        end
-    end
+    TeleportService:TeleportToPlaceInstance(game.PlaceId, randomServer.id, player)
 end
 
 local function serverHopLowPlayers()
@@ -261,18 +290,32 @@ end
 
 local tab = DrRayLibrary.newTab("Main Tab", "ImageIdHere")
 
-tab.newToggle("Aimlock", "Allows you to lock onto players on the opposite team", false, function(toggleState)
+tab.newToggle("Aimbot", "Allows you to lock onto players on the opposite team", false, function(toggleState)
     aimlockEnabled = toggleState
     if toggleState then
-        print("Aimlock On")
-        coroutine.wrap(startAimlock)()
+        print("Aimbot On")
+        coroutine.wrap(startAimbot)()
     else
-        print("Aimlock Off")
+        print("Aimbot Off")
         targetPlayer = nil
     end
 end)
 
-tab.newToggle("Auto Farm For Murderers (Faster)", "Automatically teleports behind players on the opposite team. Make sure you are in the Murderers team and have your knife equipped.", false, function(toggleState)
+tab.newSlider("Aimbot Slider", "Let's you change the fov of the aimbot circle", 450, false, function(num)
+    aimbotFOV = num
+    print("Aimbot FOV: ", num)
+end)
+
+tab.newToggle("Wall Check for Aimbot", "Don't click it it's already on bc of a bug you can't turn it off I'll fix it next update", true, function(toggleState)
+    wallCheckEnabled = toggleState
+    if toggleState then
+        print("Wall Check On")
+    else
+        print("Wall Check Off")
+    end
+end)
+
+tab.newToggle("Auto Farm For Murderers (Faster)", "Have your knife out.", false, function(toggleState)
     autoFarmMurderersEnabled = toggleState
     if toggleState then
         print("Auto Farm For Murderers (Faster) On")
@@ -283,7 +326,7 @@ tab.newToggle("Auto Farm For Murderers (Faster)", "Automatically teleports behin
     end
 end)
 
-tab.newToggle("Auto Farm For Sheriffs (Slower)", "Automatically teleports behind players on the Murderers team and attacks with a gun. Make sure you are in the Sheriffs team and have your gun equipped.", false, function(toggleState)
+tab.newToggle("Auto Farm For Sheriffs (Slower)", "Have your gun out.", false, function(toggleState)
     autoFarmSheriffsEnabled = toggleState
     if toggleState then
         print("Auto Farm For Sheriffs (Slower) On")
@@ -303,6 +346,10 @@ visualsTab.newButton("Highlights", "Highlights every player. Blue is sheriff, re
         startESP()
     end
     espEnabled = not espEnabled
+end)
+
+visualsTab.newToggle("Boxes ESP", "Enables or disables Boxes ESP", false, function(toggleState)
+    toggleBoxesESP(toggleState)
 end)
 
 local teleportsTab = DrRayLibrary.newTab("Teleports", "ImageIdHere")
@@ -329,63 +376,7 @@ local NotificationHolder = loadstring(game:HttpGet("https://raw.githubuserconten
 local Notification = loadstring(game:HttpGet("https://raw.githubusercontent.com/BocusLuke/UI/main/STX/Client.Lua"))()
 
 Notification:Notify(
-    {Title = "Thanks For using Rinns Hub", Description = "Thank you for using Rinns Hub join the discord to report any bugs gives suggestion, etc https://discord.com/invite/rCRPBsxYAa"},
-    {OutlineColor = Color3.fromRGB(80, 80, 80), Time = 5, Type = "option"},
-    {Image = "http://www.roblox.com/asset/?id=6023426923", ImageColor = Color3.fromRGB(255, 84, 84), Callback = function(State) print(tostring(State)) end}
-)
-
--- Highlight function for existing and new players
-local function highlightFunc(target)
-    local function highlightPlayer(target)
-        local Character = target.Character or target.CharacterAdded:Wait()
-        local Humanoid = Character:WaitForChild("Humanoid")
-        local Highlighter = Instance.new("Highlight", Character)
-        Highlighter.FillColor = (target.TeamColor and target.TeamColor.Color) or Color3.fromRGB(255, 48, 51)
-        
-        table.insert(espConnections, Humanoid.Changed:Connect(function()
-            if Humanoid.Health <= 0 then
-                Highlighter:Destroy()
-            end
-        end))
-    end
-
-    if target.Character then
-        highlightPlayer(target)
-    end
-    table.insert(espConnections, target.CharacterAdded:Connect(function()
-        highlightPlayer(target)
-    end))
-end
-
--- Run the highlighting function for existing players
-local function highlightExistingPlayers()
-    for _, player in ipairs(game:GetService("Players"):GetPlayers()) do
-        if player ~= game:GetService("Players").LocalPlayer then
-            highlightFunc(player)
-        end
-    end
-end
-
-highlightExistingPlayers()
-
--- Connect the player added event to the highlighting function
-game:GetService("Players").PlayerAdded:Connect(function(player)
-    if player ~= game:GetService("Players").LocalPlayer then
-        highlightFunc(player)
-    end
-end)
-
-
-local NotificationHolder = loadstring(game:HttpGet("https://raw.githubusercontent.com/BocusLuke/UI/main/STX/Module.Lua"))()
-local Notification = loadstring(game:HttpGet("https://raw.githubusercontent.com/BocusLuke/UI/main/STX/Client.Lua"))()
-
-Notification:Notify(
     {Title = "IMPORTANT", Description = "If any of the toggles are already green turn it off then turn it on for the feature to work black = off green = on"},
     {OutlineColor = Color3.fromRGB(80, 80, 80),Time = 8, Type = "option"},
     {Image = "http://www.roblox.com/asset/?id=6023426923", ImageColor = Color3.fromRGB(255, 84, 84), Callback = function(State) print(tostring(State)) end}
 )
-
-
-
-
-
